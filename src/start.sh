@@ -26,10 +26,32 @@ find_cached_path() {
     CACHED_LLAMA_ARGS="-m $model_path"
 }
 
+# Resolve a cached multimodal projector (mmproj) and append --mmproj for vision.
+# The mmproj lives in the same cached HF snapshot as the main GGUF.
+find_cached_mmproj() {
+    local mmproj_path
+    mmproj_path=$(python ./find_cached.py "$LLAMA_CACHED_MODEL" "$LLAMA_CACHED_MMPROJ_PATH")
+    if [ $? -ne 0 ] || [ -z "$mmproj_path" ]; then
+        echo "start.sh: Error: Could not resolve cached mmproj path. Check LLAMA_CACHED_MMPROJ_PATH and that the model repo is fully cached on the network volume."
+        exit 1
+    fi
+    if [ ! -f "$mmproj_path" ]; then
+        echo "start.sh: Error: mmproj file not found at '$mmproj_path'. The full repo (including the mmproj) must be cached."
+        exit 1
+    fi
+    CACHED_LLAMA_ARGS="$CACHED_LLAMA_ARGS --mmproj $mmproj_path"
+}
+
 # check if $LLAMA_CACHED_MODEL is set and not empty
 if [ -n "$LLAMA_CACHED_MODEL" ]; then
     echo "start.sh: Caching is enabled. Finding cached model path..."
     find_cached_path
+
+    # Optional vision: if an mmproj filename is given, resolve and add --mmproj.
+    if [ -n "$LLAMA_CACHED_MMPROJ_PATH" ]; then
+        echo "start.sh: Vision enabled. Finding cached mmproj path..."
+        find_cached_mmproj
+    fi
 
     echo "start.sh: Using cached model with arguments: $CACHED_LLAMA_ARGS"
 else
