@@ -58,6 +58,35 @@ else
     echo "start.sh: WARNING: Caching is disabled. Please visit the inference-worker README and docs to learn more."
 fi
 
+# Direct HF download of a SPECIFIC quant (+ chosen mmproj) — avoids pulling the
+# whole multi-quant repo. llama-server's -hf grabs just the one quant; we curl
+# the exact mmproj you name (so you control F16 vs F32 vs BF16).
+#   LLAMA_HF_REPO   e.g. unsloth/gemma-4-E4B-it-GGUF
+#   LLAMA_HF_QUANT  e.g. Q6_K   ->  -hf <repo>:<quant>
+#   LLAMA_HF_MMPROJ e.g. mmproj-F16.gguf  (optional, enables vision)
+HF_LLAMA_ARGS=""
+if [ -n "$LLAMA_HF_REPO" ] && [ -n "$LLAMA_HF_QUANT" ]; then
+    HF_LLAMA_ARGS="-hf ${LLAMA_HF_REPO}:${LLAMA_HF_QUANT}"
+
+    if [ -n "$LLAMA_HF_MMPROJ" ]; then
+        # persist on the network volume if mounted, else /tmp (re-downloaded per cold worker)
+        if [ -d /runpod-volume ]; then
+            MMPROJ_LOCAL="/runpod-volume/${LLAMA_HF_MMPROJ}"
+        else
+            MMPROJ_LOCAL="/tmp/${LLAMA_HF_MMPROJ}"
+        fi
+        if [ ! -f "$MMPROJ_LOCAL" ]; then
+            echo "start.sh: Downloading mmproj ${LLAMA_HF_MMPROJ} from ${LLAMA_HF_REPO}..."
+            curl -L -f -o "$MMPROJ_LOCAL" \
+                "https://huggingface.co/${LLAMA_HF_REPO}/resolve/main/${LLAMA_HF_MMPROJ}" \
+                || { echo "start.sh: Error: failed to download mmproj ${LLAMA_HF_MMPROJ}"; exit 1; }
+        fi
+        HF_LLAMA_ARGS="$HF_LLAMA_ARGS --mmproj $MMPROJ_LOCAL"
+    fi
+
+    echo "start.sh: Direct HF download enabled: $HF_LLAMA_ARGS"
+fi
+
 # check if $LLAMA_SERVER_CMD_ARGS is set
 if [ -z "$LLAMA_SERVER_CMD_ARGS" ]; then
     echo "start.sh: Warning: LLAMA_SERVER_CMD_ARGS is not set. Defaulting to -hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS --ctx-size 512 -ngl 999"
@@ -84,12 +113,12 @@ echo "start.sh: Stopping existing llama-server instances (if any)..."
 # we have a string with all the command line arguments in the env var LLAMA_SERVER_CMD_ARGS;
 # it contains a.e. "-hf modelname --ctx-size 4096 -ngl 999".
 
-echo "start.sh: Running /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
+echo "start.sh: Running /app/llama-server $CACHED_LLAMA_ARGS $HF_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
 
 touch llama.server.log
 
 # We need to pass these arguments to llama-server verbatim.
-LD_LIBRARY_PATH=/app /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098 2>&1 | tee llama.server.log &
+LD_LIBRARY_PATH=/app /app/llama-server $CACHED_LLAMA_ARGS $HF_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098 2>&1 | tee llama.server.log &
 
 LLAMA_SERVER_PID=$! # store the process ID (PID) of the background command
 
